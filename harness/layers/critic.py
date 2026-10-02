@@ -79,16 +79,32 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims", [])
+        if not isinstance(claims, list) or not claims:
+            return report
+
+        valid_claims = []
+        for claim in claims:
+            text = claim.get("text", "")
+            if text in ctx.observed_text:
+                valid_claims.append(claim)
+            else:
+                parts = text.split(" và ")
+                if len(parts) == 2 and parts[0] in ctx.observed_text and parts[1] in ctx.observed_text:
+                    doc_id_1 = next((doc.doc_id for doc in ctx.corpus.docs if parts[0] in doc.body and doc.body in ctx.observed_text), claim.get("doc_id"))
+                    doc_id_2 = next((doc.doc_id for doc in ctx.corpus.docs if parts[1] in doc.body and doc.body in ctx.observed_text), claim.get("doc_id"))
+                    valid_claims.append({"text": parts[0], "doc_id": doc_id_1})
+                    valid_claims.append({"text": parts[1], "doc_id": doc_id_2})
+                    report["abstain"] = True
+
+        report["claims"] = valid_claims
+
+        if not report["claims"]:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để trả lời."
+            return report
+
+        report["citations"] = sorted(list(set(c["doc_id"] for c in report["claims"] if "doc_id" in c)))
+        return report
